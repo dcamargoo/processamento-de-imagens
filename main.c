@@ -9,8 +9,44 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdbool.h>
 #include <SDL3/SDL.h>
 #include <SDL3_image/SDL_image.h>
+
+// === [H] Histograma + estatísticas ===
+// Calcula histograma (256 níveis), média e desvio-padrão da imagem em RGBA32 (assumida cinza)
+static int calcular_histograma(SDL_Surface* img, uint32_t hist[256], double* media, double* desvio) {
+    if (!img || img->format != SDL_PIXELFORMAT_RGBA32) return -1;
+    memset(hist, 0, 256 * sizeof(uint32_t));
+
+    int w = img->w, h = img->h, pitch = img->pitch;
+    uint8_t* base = (uint8_t*)img->pixels;
+    uint64_t soma = 0, soma2 = 0;
+    uint64_t N = (uint64_t)w * (uint64_t)h;
+
+    if (!SDL_LockSurface(img)) return -1;
+    for (int y = 0; y < h; y++) {
+        uint8_t* row = base + y * pitch;
+        for (int x = 0; x < w; x++) {
+            uint8_t* p = row + x * 4;
+            uint8_t v = p[0]; // R==G==B (já cinza)
+            hist[v]++;
+            soma  += v;
+            soma2 += (uint64_t)v * (uint64_t)v;
+        }
+    }
+    SDL_UnlockSurface(img);
+
+    if (N == 0) { if (media) *media = 0.0; if (desvio) *desvio = 0.0; return 0; }
+    if (media)  *media  = (double)soma / (double)N;
+    if (desvio) {
+        double mu = (double)soma / (double)N;
+        double var = ((double)soma2 / (double)N) - mu * mu;
+        if (var < 0.0) var = 0.0;
+        *desvio = sqrt(var);
+    }
+    return 0;
+}
 
 // Retorna 1 se estiver em escala de cinza / 0 se não; -1 para erro/formatos diferentes
 int verifica_se_imagem_e_cinza(SDL_Surface* img) {
@@ -123,7 +159,8 @@ size_t criar_matriz_mapeamento_por_imagem(SDL_Surface* imagem, ParIntensidade** 
             double num = (double)((int64_t)somaAteAqui - (int64_t)primeiraSoma);
             double den = (double)((int64_t)totalPixels   - (int64_t)primeiraSoma);
             long val = lround((num / den) * 255.0);
-            if (val < 0) val = 0; if (val > 255) val = 255;
+            if (val < 0) val = 0;
+            if (val > 255) val = 255;
             pares[i].antigo = listaContagens[i].intensidade;
             pares[i].novo   = (uint8_t)val;
         }
@@ -177,8 +214,6 @@ int main(int argc, char* argv[]) {
     }
 
     // SDL3_image NÃO precisa mais de IMG_Init/IMG_Quit.
-    // Basta incluir o header e chamar IMG_Load diretamente.
-
     SDL_Surface* initial_img = IMG_Load(path);
     if (!initial_img) {
         printf("Erro ao carregar a imagem: %s\n", SDL_GetError());
@@ -279,6 +314,183 @@ int main(int argc, char* argv[]) {
     } else {
         printf("Equalizada salva em 'saida_eq.bmp'\n");
     }
+
+    // === [B] GUI - Duas janelas (Item 3) ===
+    int img_w = img->w, img_h = img->h;
+
+    // Cria janela principal
+    SDL_Window* win_main = SDL_CreateWindow("Proj1 - Janela Principal", img_w, img_h, SDL_WINDOW_RESIZABLE);
+    if (!win_main) {
+        printf("Erro ao criar janela principal: %s\n", SDL_GetError());
+        free(matriz);
+        SDL_DestroySurface(eq);
+        SDL_DestroySurface(img);
+        SDL_Quit();
+        return 1;
+    }
+    SDL_SetWindowPosition(win_main, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+
+    // (opcional) entrar em tela cheia imediatamente
+    SDL_SetWindowFullscreen(win_main, true);
+
+    // Renderer principal + textura da imagem cinza
+    SDL_Renderer* ren_main = SDL_CreateRenderer(win_main, NULL);
+    if (!ren_main) {
+        printf("Erro ao criar renderer principal: %s\n", SDL_GetError());
+        SDL_DestroyWindow(win_main);
+        free(matriz);
+        SDL_DestroySurface(eq);
+        SDL_DestroySurface(img);
+        SDL_Quit();
+        return 1;
+    }
+    SDL_Texture* tex_gray = SDL_CreateTextureFromSurface(ren_main, img);
+    if (!tex_gray) {
+        printf("Erro ao criar textura (gray): %s\n", SDL_GetError());
+        SDL_DestroyRenderer(ren_main);
+        SDL_DestroyWindow(win_main);
+        free(matriz);
+        SDL_DestroySurface(eq);
+        SDL_DestroySurface(img);
+        SDL_Quit();
+        return 1;
+    }
+    // Mantém proporção automaticamente em qualquer tamanho/ fullscreen (letterbox)
+    SDL_SetTextureScaleMode(tex_gray, SDL_SCALEMODE_LINEAR);
+    SDL_SetRenderLogicalPresentation(ren_main, img_w, img_h, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+
+    // Janela secundária (tamanho fixo) ao lado da principal
+    const int SEC_W = 420, SEC_H = 380;
+    int mx, my; // posição da principal
+    SDL_GetWindowPosition(win_main, &mx, &my);
+    int sx = mx + img_w + 10; // 10px à direita da principal
+    int sy = my;
+
+    SDL_Window* win_side = SDL_CreateWindow("Proj1 - Janela Secundária", SEC_W, SEC_H, SDL_WINDOW_UTILITY);
+    if (!win_side) {
+        printf("Erro ao criar janela secundária: %s\n", SDL_GetError());
+        SDL_DestroyTexture(tex_gray);
+        SDL_DestroyRenderer(ren_main);
+        SDL_DestroyWindow(win_main);
+        free(matriz);
+        SDL_DestroySurface(eq);
+        SDL_DestroySurface(img);
+        SDL_Quit();
+        return 1;
+    }
+    SDL_SetWindowPosition(win_side, sx, sy);
+    (void)SDL_SetWindowParent(win_side, win_main); // ok se falhar
+
+    SDL_Renderer* ren_side = SDL_CreateRenderer(win_side, NULL);
+    if (!ren_side) {
+        printf("Erro ao criar renderer secundário: %s\n", SDL_GetError());
+        SDL_DestroyWindow(win_side);
+        SDL_DestroyTexture(tex_gray);
+        SDL_DestroyRenderer(ren_main);
+        SDL_DestroyWindow(win_main);
+        free(matriz);
+        SDL_DestroySurface(eq);
+        SDL_DestroySurface(img);
+        SDL_Quit();
+        return 1;
+    }
+
+    // === [H-SETUP] Pré-cálculo do histograma/estatísticas da imagem cinza ===
+    uint32_t hist[256];
+    double media = 0.0, desvio = 0.0;
+    if (calcular_histograma(img, hist, &media, &desvio) != 0) {
+        printf("Aviso: falha ao calcular histograma.\n");
+    }
+    uint32_t hist_max = 0;
+    for (int i = 0; i < 256; i++) if (hist[i] > hist_max) hist_max = hist[i];
+    if (hist_max == 0) hist_max = 1; // evita divisão por zero
+    printf("Estatísticas - média: %.2f, desvio-padrão: %.2f\n", media, desvio);
+
+    // título com tamanho da imagem
+    char title_buf[128];
+    snprintf(title_buf, sizeof(title_buf), "Imagem: %dx%dpix", img_w, img_h);
+    SDL_SetWindowTitle(win_main, title_buf);
+
+    // === Loop de eventos e renderização ===
+    bool running = true;
+    while (running) {
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_EVENT_QUIT) {
+                running = false;
+            } else if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+                running = false; // qualquer janela fechada encerra
+            }
+            // (itens 5 e 6 entram aqui depois)
+        }
+
+        // ----- Render janela principal (SDL faz letterbox proporcional) -----
+        SDL_SetRenderDrawColor(ren_main, 20, 20, 20, 255);
+        SDL_RenderClear(ren_main);
+        SDL_RenderTexture(ren_main, tex_gray, NULL, NULL);
+        SDL_RenderPresent(ren_main);
+
+        // ----- Render janela secundária: histograma -----
+        SDL_SetRenderDrawColor(ren_side, 32, 36, 48, 255);
+        SDL_RenderClear(ren_side);
+
+        // Área do histograma
+        SDL_FRect pane = {16, 16, SEC_W - 32.0f, SEC_H - 32.0f};
+        SDL_SetRenderDrawColor(ren_side, 80, 160, 220, 255);
+        SDL_RenderRect(ren_side, &pane);
+
+        // Margens internas
+        float left   = pane.x + 10.0f;
+        float right  = pane.x + pane.w - 10.0f;
+        float top    = pane.y + 10.0f;
+        float bottom = pane.y + pane.h - 50.0f; // espaço para barra inferior
+        float w_plot = right - left;
+        float h_plot = bottom - top;
+
+        // Linhas-guia 25/50/75%
+        SDL_SetRenderDrawColor(ren_side, 70, 80, 100, 255);
+        for (int g = 1; g <= 3; g++) {
+            float gy = top + (h_plot * (float)g / 4.0f);
+            SDL_FRect gl = { left, gy, w_plot, 1.0f };
+            SDL_RenderFillRect(ren_side, &gl);
+        }
+
+        // 256 barras
+        float barW = w_plot / 256.0f;
+        if (barW < 1.0f) barW = 1.0f;
+        for (int i = 0; i < 256; i++) {
+            float norm = (float)hist[i] / (float)hist_max; // 0..1
+            float bh   = norm * h_plot;
+            float bx   = left + i * (w_plot / 256.0f);
+            float by   = bottom - bh;
+
+            SDL_FRect br = { bx, by, barW, bh };
+            SDL_SetRenderDrawColor(ren_side, 160, 200, 255, 255);
+            SDL_RenderFillRect(ren_side, &br);
+        }
+
+        // Linha da média
+        float meanX = left + (float)(media / 255.0f) * w_plot;
+        SDL_SetRenderDrawColor(ren_side, 255, 200, 80, 255);
+        SDL_FRect meanLine = { meanX - 1.0f, top, 2.0f, h_plot };
+        SDL_RenderFillRect(ren_side, &meanLine);
+
+        // Barra decorativa inferior
+        SDL_FRect bar = {pane.x + 8, pane.y + pane.h - 40, pane.w - 16, 24};
+        SDL_SetRenderDrawColor(ren_side, 160, 200, 255, 255);
+        SDL_RenderFillRect(ren_side, &bar);
+
+        SDL_RenderPresent(ren_side);
+
+        SDL_Delay(16); // ~60 FPS
+    }
+
+    // === Limpeza ===
+    SDL_DestroyRenderer(ren_side);
+    SDL_DestroyWindow(win_side);
+    SDL_DestroyTexture(tex_gray);
+    SDL_DestroyRenderer(ren_main);
+    SDL_DestroyWindow(win_main);
 
     free(matriz);
     SDL_DestroySurface(eq);
