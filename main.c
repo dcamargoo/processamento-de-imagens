@@ -1,4 +1,7 @@
 // Universidade Presbiteriana Mackenzie – Computação Visual – Proj1 (SDL3)
+//Claudio Dias Alves - RA: 10403569
+//Daniel Rubio Camargo - RA: 10408823
+//João Pedro Mascaro Baccelli - RA: 10224004 
 // Build (Ubuntu):
 //   gcc -std=c99 -O2 -Wall -Wextra -o main.exe main.c   $(pkg-config --cflags --libs sdl3 sdl3-image sdl3-ttf) -lm
 // Run:
@@ -43,7 +46,7 @@ static void place_side_window(SDL_Window *win_main, SDL_Window *win_side, int si
 }
 
 
-//Gera o histograma e conta o total de pixels
+// Gera o histograma e conta o total de pixels
 static void calcular_histograma(SDL_Surface* img, uint32_t hist[256], uint64_t* total_pixels) {
     memset(hist, 0, 256 * sizeof(uint32_t));
     *total_pixels = 0;
@@ -79,12 +82,14 @@ static void estatisticas_do_histograma(const uint32_t hist[256], uint64_t total,
     *media = mu;
     *desvio = sqrt(var);
 }
+
 //Descrição da media da imagem baseado no histograma
 static const char* class_luminosidade(double media) {
     if (media < 85.0) return "escura";
     if (media < 170.0) return "media";
     return "clara";
 }
+
 //Descrição do desvio da imagem baseado no histograma
 static const char* class_contraste(double desvio) {
     if (desvio > 60.0) return "alto";
@@ -129,7 +134,7 @@ static int render_botao(SDL_Renderer* r, SDL_FRect rect, int hovered, int presse
     SDL_SetRenderDrawColor(r, 15, 35, 70, 255);
     SDL_RenderRect(r, &rect);
 
-//Desenha o botão, define a cor e calcula o centro
+    //Desenha o botão, define a cor e calcula o centro
     SDL_SetRenderDrawColor(r, 230, 230, 240, 255);
     float cx = rect.x + rect.w * 0.5f;
     float cy = rect.y + rect.h * 0.5f;
@@ -179,7 +184,8 @@ int verifica_se_imagem_e_cinza(SDL_Surface* img) {
     }
     return 1;
 }
-//quando a imagem não é cinza, aplica tons de cinza nela
+
+// Quando a imagem não é cinza, aplica tons de cinza nela
 int aplicar_escala_de_cinza(SDL_Surface* img) {
     if (!img) return -1;
     if (img->format != SDL_PIXELFORMAT_RGBA32) return -1;
@@ -193,13 +199,14 @@ int aplicar_escala_de_cinza(SDL_Surface* img) {
         for (int x = 0; x < w; x++) {
             uint8_t* p = row + x * 4;
             uint8_t R = p[0], G = p[1], B = p[2];
-            uint8_t Y = (uint8_t)(0.2125 * R + 0.7154 * G + 0.0721 * B);
-            p[0] = Y; p[1] = Y; p[2] = Y;
+            uint8_t Y = (uint8_t)(0.2125 * R + 0.7154 * G + 0.0721 * B); // fórmula usada a partir do PDF
+            p[0] = Y; p[1] = Y; p[2] = Y; // todos os pixels com a mesma intensidade para a escala de cinza
         }
     }
     return 0;
 }
 
+// Structs para armazenar as intensidades e pixels de cada intensidade para a equalização
 typedef struct { uint8_t antigo, novo; } ParIntensidade;
 typedef struct { uint8_t intensidade; uint32_t quantidade; } ContagemIntensidade;
 
@@ -224,7 +231,7 @@ size_t criar_matriz_mapeamento_por_imagem(SDL_Surface* imagem, ParIntensidade** 
         uint8_t* row = base + y * pitch;
         for (int x = 0; x < w; x++) {
             uint8_t* px = row + x * 4;
-            uint8_t intensidade = px[0]; // supomos já cinza
+            uint8_t intensidade = px[0];
 
             size_t i;
             for (i = 0; i < quantidadeIntensidades; i++) {
@@ -280,7 +287,7 @@ size_t criar_matriz_mapeamento_por_imagem(SDL_Surface* imagem, ParIntensidade** 
     *saidaPares = pares;
     return quantidadeIntensidades;
 }
-//Equaliza tons de cinza por mapeamento
+// Equaliza tons de cinza por mapeamento usando os Structs
 int equalizar_com_matriz_linear(SDL_Surface* src, SDL_Surface* dst,
                                 const ParIntensidade* pares, size_t n) {
     if (!src || !dst || (!pares && n > 0)) return -1;
@@ -309,7 +316,9 @@ int equalizar_com_matriz_linear(SDL_Surface* src, SDL_Surface* dst,
     }
     return 0;
 }
-//Tratamento de erros
+
+//-------------------------------------------------------------------------------------------------------------------------
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         printf("Erro! É preciso passar a imagem ao executar!\n");
