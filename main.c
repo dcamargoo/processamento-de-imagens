@@ -5,50 +5,160 @@
 //   ./main caminho/para/imagem.png
 
 #include <stdio.h>
-#include <stdint.h>   // uint8_t
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <stdbool.h>
+#include <errno.h>
 #include <SDL3/SDL.h>
 #include <SDL3_image/SDL_image.h>
+#include <SDL3_ttf/SDL_ttf.h>
 
-// === [H] Histograma + estatísticas ===
-// Calcula histograma (256 níveis), média e desvio-padrão da imagem em RGBA32 (assumida cinza)
-static int calcular_histograma(SDL_Surface* img, uint32_t hist[256], double* media, double* desvio) {
-    if (!img || img->format != SDL_PIXELFORMAT_RGBA32) return -1;
+// Função para posicionar a janela 'win_side' ao lado da 'win_main'
+static void place_side_window(SDL_Window *win_main, SDL_Window *win_side, int side_w, int side_h) {
+    if (!win_main || !win_side) return;
+
+    int mx, my, mw, mh;
+    SDL_GetWindowPosition(win_main, &mx, &my);
+    SDL_GetWindowSize(win_main, &mw, &mh);
+
+    SDL_DisplayID display = SDL_GetDisplayForWindow(win_main);
+    SDL_Rect usable = (SDL_Rect){0,0,0,0};
+    SDL_GetDisplayUsableBounds(display, &usable);
+
+    int x = mx + mw + 16;   // ao lado direito da principal
+    int y = my;
+
+    // se não couber à direita, tenta à esquerda
+    if (x + side_w > usable.x + usable.w) x = mx - side_w - 16;
+
+    // clamp nas bordas úteis
+    if (x < usable.x) x = usable.x;
+    if (y < usable.y) y = usable.y;
+    if (y + side_h > usable.y + usable.h) y = usable.y + usable.h - side_h;
+
+    SDL_SetWindowPosition(win_side, x, y);
+    SDL_ShowWindow(win_side);
+}
+
+
+//Gera o histograma e conta o total de pixels
+static void calcular_histograma(SDL_Surface* img, uint32_t hist[256], uint64_t* total_pixels) {
     memset(hist, 0, 256 * sizeof(uint32_t));
+    *total_pixels = 0;
+
+    if (!img || img->format != SDL_PIXELFORMAT_RGBA32) return;
 
     int w = img->w, h = img->h, pitch = img->pitch;
     uint8_t* base = (uint8_t*)img->pixels;
-    uint64_t soma = 0, soma2 = 0;
-    uint64_t N = (uint64_t)w * (uint64_t)h;
 
-    if (!SDL_LockSurface(img)) return -1;
     for (int y = 0; y < h; y++) {
         uint8_t* row = base + y * pitch;
         for (int x = 0; x < w; x++) {
             uint8_t* p = row + x * 4;
-            uint8_t v = p[0]; // R==G==B (já cinza)
-            hist[v]++;
-            soma  += v;
-            soma2 += (uint64_t)v * (uint64_t)v;
+            uint8_t Y = p[0]; // RGBA32 e imagem em cinza: R=G=B
+            hist[Y]++;
+            (*total_pixels)++;
         }
     }
-    SDL_UnlockSurface(img);
-
-    if (N == 0) { if (media) *media = 0.0; if (desvio) *desvio = 0.0; return 0; }
-    if (media)  *media  = (double)soma / (double)N;
-    if (desvio) {
-        double mu = (double)soma / (double)N;
-        double var = ((double)soma2 / (double)N) - mu * mu;
-        if (var < 0.0) var = 0.0;
-        *desvio = sqrt(var);
+}
+//Calcula média e desvio padrão do histograma
+static void estatisticas_do_histograma(const uint32_t hist[256], uint64_t total,
+                                       double* media, double* desvio) {
+    if (total == 0) { *media = 0.0; *desvio = 0.0; return; }
+    double soma = 0.0;
+    for (int i = 0; i < 256; i++) soma += i * (double)hist[i];
+    double mu = soma / (double)total;
+    double var = 0.0;
+    for (int i = 0; i < 256; i++) {
+        double d = (double)i - mu;
+        var += d * d * (double)hist[i];
     }
-    return 0;
+    var /= (double)total;
+    *media = mu;
+    *desvio = sqrt(var);
+}
+//Descrição da media da imagem baseado no histograma
+static const char* class_luminosidade(double media) {
+    if (media < 85.0) return "escura";
+    if (media < 170.0) return "media";
+    return "clara";
+}
+//Descrição do desvio da imagem baseado no histograma
+static const char* class_contraste(double desvio) {
+    if (desvio > 60.0) return "alto";
+    if (desvio > 30.0) return "medio";
+    return "baixo";
 }
 
-// Retorna 1 se estiver em escala de cinza / 0 se não; -1 para erro/formatos diferentes
+// Desenha histograma em uma área (retângulo) usando barras
+static void render_histograma(SDL_Renderer* r, SDL_FRect area, const uint32_t hist[256]) {
+    SDL_SetRenderDrawColor(r, 30, 30, 40, 255);
+    SDL_RenderFillRect(r, &area);
+
+    float pad = 10.0f;
+    SDL_FRect plot = (SDL_FRect){ area.x + pad, area.y + pad, area.w - 2*pad, area.h - 2*pad };
+
+    SDL_SetRenderDrawColor(r, 80, 80, 120, 255);
+    SDL_RenderRect(r, &plot);
+
+    uint32_t maxv = 1;
+    for (int i = 0; i < 256; i++) if (hist[i] > maxv) maxv = hist[i];
+
+    float wbar = plot.w / 256.0f;
+    for (int i = 0; i < 256; i++) {
+        float x = plot.x + i * wbar;
+        float h = (hist[i] / (float)maxv) * (plot.h - 1.0f);
+        SDL_FRect bar = (SDL_FRect){ x, plot.y + plot.h - h, wbar, h };
+        SDL_SetRenderDrawColor(r, 120, 180, 240, 255);
+        SDL_RenderFillRect(r, &bar);
+    }
+}
+
+static TTF_Font* g_ui_font = NULL;
+
+// Desenha um botão e retorna 1 para mudar de cor caso o mouse esteja sobre ele
+static int render_botao(SDL_Renderer* r, SDL_FRect rect, int hovered, int pressed, const char* rotulo_curto) {
+    if (pressed) SDL_SetRenderDrawColor(r, 30, 70, 150, 255);
+    else if (hovered) SDL_SetRenderDrawColor(r, 60, 120, 220, 255);
+    else SDL_SetRenderDrawColor(r, 40, 90, 190, 255);
+
+    SDL_RenderFillRect(r, &rect);
+
+    SDL_SetRenderDrawColor(r, 15, 35, 70, 255);
+    SDL_RenderRect(r, &rect);
+
+//Desenha o botão, define a cor e calcula o centro
+    SDL_SetRenderDrawColor(r, 230, 230, 240, 255);
+    float cx = rect.x + rect.w * 0.5f;
+    float cy = rect.y + rect.h * 0.5f;
+    if (g_ui_font && rotulo_curto && rotulo_curto[0] != '\0') {
+        SDL_Color fg = {240, 244, 255, 255};
+        SDL_Surface* surf = TTF_RenderText_Blended(g_ui_font, rotulo_curto, strlen(rotulo_curto), fg);
+        if (surf) {
+            SDL_Texture* tex = SDL_CreateTextureFromSurface(r, surf);
+            if (tex) {
+                SDL_FRect dst = {
+                    rect.x + (rect.w - (float)surf->w) * 0.5f,
+                    rect.y + (rect.h - (float)surf->h) * 0.5f,
+                    (float)surf->w,
+                    (float)surf->h
+                };
+                SDL_RenderTexture(r, tex, NULL, &dst);
+                SDL_DestroyTexture(tex);
+            }
+            SDL_DestroySurface(surf);
+        }
+    } else {
+        SDL_RenderLine(r, cx - 20, cy, cx + 20, cy);
+        SDL_RenderLine(r, cx, cy - 6, cx, cy + 6);
+    }
+    (void)rotulo_curto;
+    return hovered;
+}
+
+// Retorna 1 se estiver em escala de cinza e 0 se não
 int verifica_se_imagem_e_cinza(SDL_Surface* img) {
     if (!img) return -1;
     if (img->format != SDL_PIXELFORMAT_RGBA32) return -1;
@@ -69,7 +179,7 @@ int verifica_se_imagem_e_cinza(SDL_Surface* img) {
     }
     return 1;
 }
-
+//quando a imagem não é cinza, aplica tons de cinza nela
 int aplicar_escala_de_cinza(SDL_Surface* img) {
     if (!img) return -1;
     if (img->format != SDL_PIXELFORMAT_RGBA32) return -1;
@@ -170,7 +280,7 @@ size_t criar_matriz_mapeamento_por_imagem(SDL_Surface* imagem, ParIntensidade** 
     *saidaPares = pares;
     return quantidadeIntensidades;
 }
-
+//Equaliza tons de cinza por mapeamento
 int equalizar_com_matriz_linear(SDL_Surface* src, SDL_Surface* dst,
                                 const ParIntensidade* pares, size_t n) {
     if (!src || !dst || (!pares && n > 0)) return -1;
@@ -199,7 +309,7 @@ int equalizar_com_matriz_linear(SDL_Surface* src, SDL_Surface* dst,
     }
     return 0;
 }
-
+//Tratamento de erros
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         printf("Erro! É preciso passar a imagem ao executar!\n");
@@ -213,27 +323,41 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // SDL3_image NÃO precisa mais de IMG_Init/IMG_Quit.
+    
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "Erro: não foi possível abrir '%s' (%s)\n", path, strerror(errno));
+        SDL_Quit();
+        return 1;
+    }
+    fclose(f);
+
+    SDL_ClearError();
     SDL_Surface* initial_img = IMG_Load(path);
     if (!initial_img) {
-        printf("Erro ao carregar a imagem: %s\n", SDL_GetError());
+        fprintf(stderr,
+                "Erro: o arquivo não é uma imagem suportada ou está corrompido.\nDetalhe: %s\n",
+                SDL_GetError());
         SDL_Quit();
         return 1;
     }
 
     SDL_Surface* img = SDL_ConvertSurface(initial_img, SDL_PIXELFORMAT_RGBA32);
+    SDL_DestroySurface(initial_img);
     if (!img) {
-        printf("Erro na conversão para RGBA32: %s\n", SDL_GetError());
-        SDL_DestroySurface(initial_img);
+        fprintf(stderr, "Erro: falha ao converter para RGBA32: %s\n", SDL_GetError());
         SDL_Quit();
         return 1;
     }
-    SDL_DestroySurface(initial_img);
 
-    printf("Surface: w=%d, h=%d, pitch=%d, format=%u, flags=%u\n",
-           img->w, img->h, img->pitch, img->format, img->flags);
+    if (img->w <= 0 || img->h <= 0) {
+        fprintf(stderr, "Erro: dimensões de imagem inválidas (%dx%d).\n", img->w, img->h);
+        SDL_DestroySurface(img);
+        SDL_Quit();
+        return 1;
+    }
 
-    // --- Passo 1: garantir cinza (se não estiver) ---
+    //garantir cinza na imagem
     if (!SDL_LockSurface(img)) {
         printf("Erro ao travar surface para escala de cinza: %s\n", SDL_GetError());
         SDL_DestroySurface(img);
@@ -241,66 +365,37 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     int escalaCinza = verifica_se_imagem_e_cinza(img);
-    if (escalaCinza == 0) {
+    if(escalaCinza == 0){
         aplicar_escala_de_cinza(img);
-        printf("Imagem convertida para escala de cinza.\n");
-    } else if (escalaCinza == 1) {
-        printf("Imagem já está em escala de cinza.\n");
-    } else {
-        printf("Aviso: formato inesperado; esperava RGBA32.\n");
     }
+
+    int w = img->w, h = img->h;
     SDL_UnlockSurface(img);
 
-    if (!SDL_SaveBMP(img, "saida.bmp")) {
-        printf("Erro ao salvar 'saida.bmp': %s\n", SDL_GetError());
-    } else {
-        printf("Processada: %dx%d, salva em 'saida.bmp'\n", img->w, img->h);
-    }
-
-    // --- Passo 2: criar matriz de equalização a partir da imagem ---
-    if (!SDL_LockSurface(img)) {
-        printf("Erro ao travar surface para criar matriz: %s\n", SDL_GetError());
-        SDL_DestroySurface(img);
-        SDL_Quit();
-        return 1;
-    }
+    //Cria matriz somente com intensidades presentes
     ParIntensidade* matriz = NULL;
     size_t linhas = criar_matriz_mapeamento_por_imagem(img, &matriz);
     SDL_UnlockSurface(img);
 
     if (linhas == 0 || !matriz) {
         printf("Erro: não foi possível criar a matriz de mapeamento.\n");
-        SDL_DestroySurface(img);
-        SDL_Quit();
+        SDL_DestroySurface(img); SDL_Quit();
         return 1;
     }
-    printf("Matriz de mapeamento criada com %zu linhas (colunas: antigo|novo).\n", linhas);
 
-    // --- Passo 3: criar destino e aplicar equalização ---
-    SDL_Surface* eq = SDL_CreateSurface(img->w, img->h, SDL_PIXELFORMAT_RGBA32);
+    SDL_Surface* eq = SDL_ConvertSurface(img, SDL_PIXELFORMAT_RGBA32);
     if (!eq) {
-        printf("Erro ao criar surface destino para equalização: %s\n", SDL_GetError());
+        printf("Erro ao criar cópia para equalização.\n");
         free(matriz);
-        SDL_DestroySurface(img);
-        SDL_Quit();
+        SDL_DestroySurface(img); SDL_Quit();
         return 1;
     }
 
-    if (!SDL_LockSurface(img)) {
-        printf("Erro ao travar 'img' para equalização: %s\n", SDL_GetError());
-        free(matriz);
+    if (!SDL_LockSurface(img) || !SDL_LockSurface(eq)) {
+        printf("Erro ao travar surfaces na equalização.\n");
         SDL_DestroySurface(eq);
-        SDL_DestroySurface(img);
-        SDL_Quit();
-        return 1;
-    }
-    if (!SDL_LockSurface(eq)) {
-        printf("Erro ao travar 'eq' para equalização: %s\n", SDL_GetError());
-        SDL_UnlockSurface(img);
         free(matriz);
-        SDL_DestroySurface(eq);
-        SDL_DestroySurface(img);
-        SDL_Quit();
+        SDL_DestroySurface(img); SDL_Quit();
         return 1;
     }
 
@@ -309,192 +404,212 @@ int main(int argc, char* argv[]) {
     SDL_UnlockSurface(eq);
     SDL_UnlockSurface(img);
 
-    if (!SDL_SaveBMP(eq, "saida_eq.bmp")) {
-        printf("Erro ao salvar 'saida_eq.bmp': %s\n", SDL_GetError());
-    } else {
-        printf("Equalizada salva em 'saida_eq.bmp'\n");
-    }
+    {
+        //Janela principal
+        SDL_Window* win_main = SDL_CreateWindow("Proj1 - Principal (Imagem)",
+                                                w, h, SDL_WINDOW_RESIZABLE);
+        if (!win_main) {
+            printf("Erro ao criar janela principal: %s\n", SDL_GetError());
+            free(matriz);
+            SDL_DestroySurface(eq);
+            SDL_DestroySurface(img);
+            SDL_Quit();
+            return 1;
+        }
+        SDL_SetWindowPosition(win_main, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
 
-    // === [B] GUI - Duas janelas (Item 3) ===
-    int img_w = img->w, img_h = img->h;
+        SDL_Renderer* ren_main = SDL_CreateRenderer(win_main, NULL);
+        if (!ren_main) {
+            printf("Erro ao criar renderer principal: %s\n", SDL_GetError());
+            SDL_DestroyWindow(win_main);
+            free(matriz); SDL_DestroySurface(eq); SDL_DestroySurface(img); SDL_Quit(); return 1;
+        }
 
-    // Cria janela principal
-    SDL_Window* win_main = SDL_CreateWindow("Proj1 - Janela Principal", img_w, img_h, SDL_WINDOW_RESIZABLE);
-    if (!win_main) {
-        printf("Erro ao criar janela principal: %s\n", SDL_GetError());
-        free(matriz);
-        SDL_DestroySurface(eq);
-        SDL_DestroySurface(img);
-        SDL_Quit();
-        return 1;
-    }
-    SDL_SetWindowPosition(win_main, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        // texturas para original e equalizada
+        SDL_Texture* tex_orig = SDL_CreateTextureFromSurface(ren_main, img);
+        SDL_Texture* tex_eq   = SDL_CreateTextureFromSurface(ren_main, eq);
+        SDL_Texture* tex_atual = tex_orig;
 
-    // (opcional) entrar em tela cheia imediatamente
-    SDL_SetWindowFullscreen(win_main, true);
+        // 2) Janela secundária (NORMAL) ao lado
+        const int SEC_W = 480;
+        const int SEC_H = 560;
 
-    // Renderer principal + textura da imagem cinza
-    SDL_Renderer* ren_main = SDL_CreateRenderer(win_main, NULL);
-    if (!ren_main) {
-        printf("Erro ao criar renderer principal: %s\n", SDL_GetError());
-        SDL_DestroyWindow(win_main);
-        free(matriz);
-        SDL_DestroySurface(eq);
-        SDL_DestroySurface(img);
-        SDL_Quit();
-        return 1;
-    }
-    SDL_Texture* tex_gray = SDL_CreateTextureFromSurface(ren_main, img);
-    if (!tex_gray) {
-        printf("Erro ao criar textura (gray): %s\n", SDL_GetError());
-        SDL_DestroyRenderer(ren_main);
-        SDL_DestroyWindow(win_main);
-        free(matriz);
-        SDL_DestroySurface(eq);
-        SDL_DestroySurface(img);
-        SDL_Quit();
-        return 1;
-    }
-    // Mantém proporção automaticamente em qualquer tamanho/ fullscreen (letterbox)
-    SDL_SetTextureScaleMode(tex_gray, SDL_SCALEMODE_LINEAR);
-    SDL_SetRenderLogicalPresentation(ren_main, img_w, img_h, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+        SDL_Window* win_sec = SDL_CreateWindow("Proj1 - Secundaria (Histograma)", SEC_W, SEC_H, 0);
+        if (!win_sec) {
+            printf("Erro ao criar janela secundária: %s\n", SDL_GetError());
+            SDL_DestroyTexture(tex_orig); SDL_DestroyTexture(tex_eq);
+            SDL_DestroyRenderer(ren_main); SDL_DestroyWindow(win_main);
+            free(matriz); SDL_DestroySurface(eq); SDL_DestroySurface(img); SDL_Quit(); return 1;
+        }
+        place_side_window(win_main, win_sec, SEC_W, SEC_H);
 
-    // Janela secundária (tamanho fixo) ao lado da principal
-    const int SEC_W = 420, SEC_H = 380;
-    int mx, my; // posição da principal
-    SDL_GetWindowPosition(win_main, &mx, &my);
-    int sx = mx + img_w + 10; // 10px à direita da principal
-    int sy = my;
+        SDL_Renderer* ren_sec = SDL_CreateRenderer(win_sec, NULL);
+        if (!ren_sec) {
+            printf("Erro ao criar renderer secundário: %s\n", SDL_GetError());
+            SDL_DestroyWindow(win_sec);
+            SDL_DestroyTexture(tex_orig); SDL_DestroyTexture(tex_eq);
+            SDL_DestroyRenderer(ren_main); SDL_DestroyWindow(win_main);
+            free(matriz); SDL_DestroySurface(eq); SDL_DestroySurface(img); SDL_Quit(); return 1;
+        }
 
-    SDL_Window* win_side = SDL_CreateWindow("Proj1 - Janela Secundária", SEC_W, SEC_H, SDL_WINDOW_UTILITY);
-    if (!win_side) {
-        printf("Erro ao criar janela secundária: %s\n", SDL_GetError());
-        SDL_DestroyTexture(tex_gray);
-        SDL_DestroyRenderer(ren_main);
-        SDL_DestroyWindow(win_main);
-        free(matriz);
-        SDL_DestroySurface(eq);
-        SDL_DestroySurface(img);
-        SDL_Quit();
-        return 1;
-    }
-    SDL_SetWindowPosition(win_side, sx, sy);
-    (void)SDL_SetWindowParent(win_side, win_main); // ok se falhar
+        if (TTF_Init()) {
+            g_ui_font = TTF_OpenFont("DejaVuSans.ttf", 18);
+            if (!g_ui_font) g_ui_font = TTF_OpenFont("C:\\Windows\\Fonts\\arial.ttf", 18);
+        }
 
-    SDL_Renderer* ren_side = SDL_CreateRenderer(win_side, NULL);
-    if (!ren_side) {
-        printf("Erro ao criar renderer secundário: %s\n", SDL_GetError());
-        SDL_DestroyWindow(win_side);
-        SDL_DestroyTexture(tex_gray);
-        SDL_DestroyRenderer(ren_main);
-        SDL_DestroyWindow(win_main);
-        free(matriz);
-        SDL_DestroySurface(eq);
-        SDL_DestroySurface(img);
-        SDL_Quit();
-        return 1;
-    }
+        // Estado do botão e histograma
+        int equalizado_on = 0; // começa mostrando original
+        uint32_t hist[256];
+        uint64_t total = 0;
+        calcular_histograma(img, hist, &total); // histograma da imagem atual (original)
+        double media = 0.0, desvio = 0.0;
+        estatisticas_do_histograma(hist, total, &media, &desvio);
 
-    // === [H-SETUP] Pré-cálculo do histograma/estatísticas da imagem cinza ===
-    uint32_t hist[256];
-    double media = 0.0, desvio = 0.0;
-    if (calcular_histograma(img, hist, &media, &desvio) != 0) {
-        printf("Aviso: falha ao calcular histograma.\n");
-    }
-    uint32_t hist_max = 0;
-    for (int i = 0; i < 256; i++) if (hist[i] > hist_max) hist_max = hist[i];
-    if (hist_max == 0) hist_max = 1; // evita divisão por zero
-    printf("Estatísticas - média: %.2f, desvio-padrão: %.2f\n", media, desvio);
+        // Atualiza título com as infos
+        char titulo_sec[256];
+        snprintf(titulo_sec, sizeof(titulo_sec),
+                 "Hist: media=%.1f (%s), desvio=%.1f (contraste %s)  |  Botao: Equalizado",
+                 media, class_luminosidade(media), desvio, class_contraste(desvio));
+        SDL_SetWindowTitle(win_sec, titulo_sec);
 
-    // título com tamanho da imagem
-    char title_buf[128];
-    snprintf(title_buf, sizeof(title_buf), "Imagem: %dx%dpix", img_w, img_h);
-    SDL_SetWindowTitle(win_main, title_buf);
+        // Áreas na secundária: histograma e botão
+        SDL_FRect area_hist = (SDL_FRect){ 16, 16, SEC_W - 32, SEC_H - 16 - 120 };
+        SDL_FRect area_btn  = (SDL_FRect){ SEC_W/2.0f - 120.0f, SEC_H - 60.0f, 240.0f, 40.0f };
 
-    // === Loop de eventos e renderização ===
-    bool running = true;
-    while (running) {
-        SDL_Event e;
-        while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_EVENT_QUIT) {
-                running = false;
-            } else if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
-                running = false; // qualquer janela fechada encerra
+        int running = 1;
+        int btn_hover = 0, btn_pressed = 0;
+
+        while (running) {
+            SDL_Event e;
+            while (SDL_PollEvent(&e)) {
+                if (e.type == SDL_EVENT_QUIT) running = 0;
+                else if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) running = 0;
+
+                // Reposiciona a janela do histograma se a principal se mover/trocar tamanho
+                else if ((e.type == SDL_EVENT_WINDOW_MOVED || e.type == SDL_EVENT_WINDOW_RESIZED) &&
+                          e.window.windowID == SDL_GetWindowID(win_main)) {
+                    place_side_window(win_main, win_sec, SEC_W, SEC_H);
+                }
+                else if (e.type == SDL_EVENT_KEY_DOWN) {
+                    // ESC sai; S salva o que está visível AGORA
+                    if (e.key.scancode == SDL_SCANCODE_ESCAPE) {
+                        running = 0;
+                    } else if (e.key.scancode == SDL_SCANCODE_S) {
+                        // Salva diretamente a imagem em memória (sem passar pelo renderer)
+                        SDL_Surface* atual = equalizado_on ? eq : img;
+                        if (IMG_SavePNG(atual, "output_image.png") != 0) {
+                            SDL_Log("Imagem salva como 'output_image.png'");
+                        } else {
+                            SDL_Log("Falha ao salvar 'output_image.png': %s", SDL_GetError());
+                        }
+                    }
+
+                } else if (e.type == SDL_EVENT_MOUSE_MOTION) {
+                    if (e.motion.windowID == SDL_GetWindowID(win_sec)) {
+                        float mx = (float)e.motion.x;
+                        float my = (float)e.motion.y;
+                        btn_hover = (mx >= area_btn.x && mx <= area_btn.x + area_btn.w &&
+                                     my >= area_btn.y && my <= area_btn.y + area_btn.h);
+                    }
+                } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                    if (e.button.windowID == SDL_GetWindowID(win_sec) && e.button.button == SDL_BUTTON_LEFT) {
+                        float mx = (float)e.button.x, my = (float)e.button.y;
+                        if (mx >= area_btn.x && mx <= area_btn.x + area_btn.w &&
+                            my >= area_btn.y && my <= area_btn.y + area_btn.h) {
+                            btn_pressed = 1;
+                        }
+                    }
+                } else if (e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+                    if (btn_pressed && e.button.windowID == SDL_GetWindowID(win_sec) &&
+                        e.button.button == SDL_BUTTON_LEFT) {
+                        float mx = (float)e.button.x, my = (float)e.button.y;
+                        int inside = (mx >= area_btn.x && mx <= area_btn.x + area_btn.w &&
+                                      my >= area_btn.y && my <= area_btn.y + area_btn.h);
+                        btn_pressed = 0;
+                        if (inside) {
+                            // Toggle entre imagens original e equalizada
+                            equalizado_on = !equalizado_on;
+                            tex_atual = equalizado_on ? tex_eq : tex_orig;
+
+                            // Recalcula histograma da imagem atualmente exibida
+                            if (equalizado_on) calcular_histograma(eq, hist, &total);
+                            else calcular_histograma(img, hist, &total);
+                            estatisticas_do_histograma(hist, total, &media, &desvio);
+
+                            snprintf(titulo_sec, sizeof(titulo_sec),
+                                     "Hist: media=%.1f (%s), desvio=%.1f (contraste %s)  |  Botao: %s",
+                                     media, class_luminosidade(media), desvio, class_contraste(desvio),
+                                     equalizado_on ? "Original" : "Equalizado");
+                            SDL_SetWindowTitle(win_sec, titulo_sec);
+                        }
+                    }
+                }
             }
-            // (itens 5 e 6 entram aqui depois)
+
+            // Render principal
+            int vw, vh;
+            SDL_GetWindowSize(win_main, &vw, &vh);
+            SDL_SetRenderDrawColor(ren_main, 12, 12, 12, 255);
+            SDL_RenderClear(ren_main);
+            SDL_FRect dst = (SDL_FRect){0, 0, (float)vw, (float)vh};
+            SDL_RenderTexture(ren_main, tex_atual, NULL, &dst);
+            SDL_RenderPresent(ren_main);
+
+            // Render secundária: histograma + textos + botão
+            SDL_SetRenderDrawColor(ren_sec, 22, 22, 28, 255);
+            SDL_RenderClear(ren_sec);
+            render_histograma(ren_sec, area_hist, hist);
+
+            if (g_ui_font) {
+                char l1[128], l2[128];
+                snprintf(l1, sizeof(l1), "Média: %.1f (%s)", media, class_luminosidade(media));
+                snprintf(l2, sizeof(l2), "Desvio padrão: %.1f (%s)", desvio, class_contraste(desvio));
+                SDL_Color fg = (SDL_Color){230,230,240,255};
+
+                SDL_Surface* s1 = TTF_RenderText_Blended(g_ui_font, l1, strlen(l1), fg);
+                if (s1) {
+                    SDL_Texture* t1 = SDL_CreateTextureFromSurface(ren_sec, s1);
+                    if (t1) {
+                        SDL_FRect d1 = { area_hist.x, area_hist.y + area_hist.h + 8, (float)s1->w, (float)s1->h };
+                        SDL_RenderTexture(ren_sec, t1, NULL, &d1);
+                        SDL_DestroyTexture(t1);
+                    }
+                    SDL_DestroySurface(s1);
+                }
+
+                SDL_Surface* s2 = TTF_RenderText_Blended(g_ui_font, l2, strlen(l2), fg);
+                if (s2) {
+                    SDL_Texture* t2 = SDL_CreateTextureFromSurface(ren_sec, s2);
+                    if (t2) {
+                        SDL_FRect d2 = { area_hist.x, area_hist.y + area_hist.h + 8 + 22, (float)s2->w, (float)s2->h };
+                        SDL_RenderTexture(ren_sec, t2, NULL, &d2);
+                        SDL_DestroyTexture(t2);
+                    }
+                    SDL_DestroySurface(s2);
+                }
+            }
+
+            render_botao(ren_sec, area_btn, btn_hover, btn_pressed, equalizado_on ? "Original" : "Equalizado");
+
+            SDL_RenderPresent(ren_sec);
+
+            SDL_Delay(16); // ~60 FPS
         }
 
-        // ----- Render janela principal (SDL faz letterbox proporcional) -----
-        SDL_SetRenderDrawColor(ren_main, 20, 20, 20, 255);
-        SDL_RenderClear(ren_main);
-        SDL_RenderTexture(ren_main, tex_gray, NULL, NULL);
-        SDL_RenderPresent(ren_main);
-
-        // ----- Render janela secundária: histograma -----
-        SDL_SetRenderDrawColor(ren_side, 32, 36, 48, 255);
-        SDL_RenderClear(ren_side);
-
-        // Área do histograma
-        SDL_FRect pane = {16, 16, SEC_W - 32.0f, SEC_H - 32.0f};
-        SDL_SetRenderDrawColor(ren_side, 80, 160, 220, 255);
-        SDL_RenderRect(ren_side, &pane);
-
-        // Margens internas
-        float left   = pane.x + 10.0f;
-        float right  = pane.x + pane.w - 10.0f;
-        float top    = pane.y + 10.0f;
-        float bottom = pane.y + pane.h - 50.0f; // espaço para barra inferior
-        float w_plot = right - left;
-        float h_plot = bottom - top;
-
-        // Linhas-guia 25/50/75%
-        SDL_SetRenderDrawColor(ren_side, 70, 80, 100, 255);
-        for (int g = 1; g <= 3; g++) {
-            float gy = top + (h_plot * (float)g / 4.0f);
-            SDL_FRect gl = { left, gy, w_plot, 1.0f };
-            SDL_RenderFillRect(ren_side, &gl);
-        }
-
-        // 256 barras
-        float barW = w_plot / 256.0f;
-        if (barW < 1.0f) barW = 1.0f;
-        for (int i = 0; i < 256; i++) {
-            float norm = (float)hist[i] / (float)hist_max; // 0..1
-            float bh   = norm * h_plot;
-            float bx   = left + i * (w_plot / 256.0f);
-            float by   = bottom - bh;
-
-            SDL_FRect br = { bx, by, barW, bh };
-            SDL_SetRenderDrawColor(ren_side, 160, 200, 255, 255);
-            SDL_RenderFillRect(ren_side, &br);
-        }
-
-        // Linha da média
-        float meanX = left + (float)(media / 255.0f) * w_plot;
-        SDL_SetRenderDrawColor(ren_side, 255, 200, 80, 255);
-        SDL_FRect meanLine = { meanX - 1.0f, top, 2.0f, h_plot };
-        SDL_RenderFillRect(ren_side, &meanLine);
-
-        // Barra decorativa inferior
-        SDL_FRect bar = {pane.x + 8, pane.y + pane.h - 40, pane.w - 16, 24};
-        SDL_SetRenderDrawColor(ren_side, 160, 200, 255, 255);
-        SDL_RenderFillRect(ren_side, &bar);
-
-        SDL_RenderPresent(ren_side);
-
-        SDL_Delay(16); // ~60 FPS
+        // Limpeza
+        SDL_DestroyTexture(tex_orig);
+        SDL_DestroyTexture(tex_eq);
+        SDL_DestroyRenderer(ren_main);
+        SDL_DestroyWindow(win_main);
+        SDL_DestroyRenderer(ren_sec);
+        SDL_DestroyWindow(win_sec);
     }
-
-    // === Limpeza ===
-    SDL_DestroyRenderer(ren_side);
-    SDL_DestroyWindow(win_side);
-    SDL_DestroyTexture(tex_gray);
-    SDL_DestroyRenderer(ren_main);
-    SDL_DestroyWindow(win_main);
 
     free(matriz);
     SDL_DestroySurface(eq);
     SDL_DestroySurface(img);
+    if (g_ui_font) TTF_CloseFont(g_ui_font);
+    TTF_Quit();
     SDL_Quit();
     return 0;
 }
