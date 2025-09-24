@@ -1,6 +1,6 @@
 // Universidade Presbiteriana Mackenzie – Computação Visual – Proj1 (SDL3)
 // Build (Ubuntu):
-//   gcc -std=c99 -O2 -Wall -Wextra -o main main.c `pkg-config --cflags --libs sdl3` -lSDL3_image -lm
+//   gcc -std=c99 -O2 -Wall -Wextra -o main.exe main.c   $(pkg-config --cflags --libs sdl3 sdl3-image sdl3-ttf) -lm
 // Run:
 //   ./main caminho/para/imagem.png
 
