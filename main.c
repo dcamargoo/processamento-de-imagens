@@ -1,4 +1,7 @@
+
+
 // Universidade Presbiteriana Mackenzie – Computação Visual – Projeto 1 (SDL3)
+//
 //
 // Alunos:
 // - Nome: Claudio Dias Alves          - RA: 10403569
@@ -21,6 +24,58 @@
 #include <SDL3/SDL.h>
 #include <SDL3_image/SDL_image.h>
 #include <SDL3_ttf/SDL_ttf.h>
+
+static TTF_Font* open_ui_font(int pt) {
+    char local1[1024] = {0};
+    const char *base = SDL_GetBasePath();
+    if (base) {
+        SDL_snprintf(local1, sizeof(local1), "%sDejaVuSans.ttf", base);
+    } else {
+        SDL_strlcpy(local1, "DejaVuSans.ttf", sizeof(local1));
+    }
+    const char* local_candidates[] = { local1, "DejaVuSans.ttf", "fonts/DejaVuSans.ttf", NULL };
+
+#if defined(_WIN32)
+    const char* os_candidates[] = {
+        ".\\DejaVuSans.ttf",
+        ".\\fonts\\DejaVuSans.ttf",
+        "C:\\\\Windows\\\\Fonts\\\\arial.ttf",
+        "C:\\\\Windows\\\\Fonts\\\\segoeui.ttf",
+        "C:\\\\Windows\\\\Fonts\\\\tahoma.ttf",
+        NULL
+    };
+#elif defined(__linux__)
+    const char* os_candidates[] = {
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+        NULL
+    };
+#elif defined(__APPLE__)
+    const char* os_candidates[] = {
+        "/Library/Fonts/Arial.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        NULL
+    };
+#else
+    const char* os_candidates[] = { NULL };
+#endif
+
+    for (int i = 0; local_candidates[i]; ++i) {
+        SDL_Log("Tentando fonte local: %s", local_candidates[i]);
+        TTF_Font* f = TTF_OpenFont(local_candidates[i], pt);
+        if (f) return f;
+        SDL_Log("Falhou: %s", SDL_GetError());
+    }
+    for (int i = 0; os_candidates[i]; ++i) {
+        SDL_Log("Tentando fonte do SO: %s", os_candidates[i]);
+        TTF_Font* f = TTF_OpenFont(os_candidates[i], pt);
+        if (f) return f;
+        SDL_Log("Falhou: %s", SDL_GetError());
+    }
+    return NULL;
+}
 
 // Função para posicionar a janela 'win_side' ao lado da 'win_main'
 static void place_side_window(SDL_Window *win_main, SDL_Window *win_side, int side_w, int side_h) {
@@ -149,6 +204,7 @@ static int render_botao(SDL_Renderer* r, SDL_FRect rect, int hovered, int presse
         if (surf) {
             SDL_Texture* tex = SDL_CreateTextureFromSurface(r, surf);
             if (tex) {
+                SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
                 SDL_FRect dst = {
                     rect.x + (rect.w - (float)surf->w) * 0.5f,
                     rect.y + (rect.h - (float)surf->h) * 0.5f,
@@ -339,7 +395,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    
+    SDL_SetLogPriority(SDL_LOG_CATEGORY_APPLICATION, SDL_LOG_PRIORITY_DEBUG);
+
     FILE *f = fopen(path, "rb");
     if (!f) {
         fprintf(stderr, "Erro: não foi possível abrir '%s' (%s)\n", path, strerror(errno));
@@ -391,7 +448,6 @@ int main(int argc, char* argv[]) {
     //Cria matriz somente com intensidades presentes
     ParIntensidade* matriz = NULL;
     size_t linhas = criar_matriz_mapeamento_por_imagem(img, &matriz);
-    SDL_UnlockSurface(img);
 
     if (linhas == 0 || !matriz) {
         printf("Erro: não foi possível criar a matriz de mapeamento.\n");
@@ -468,9 +524,15 @@ int main(int argc, char* argv[]) {
             free(matriz); SDL_DestroySurface(eq); SDL_DestroySurface(img); SDL_Quit(); return 1;
         }
 
-        if (TTF_Init()) {
-            g_ui_font = TTF_OpenFont("DejaVuSans.ttf", 18);
-            if (!g_ui_font) g_ui_font = TTF_OpenFont("C:\\Windows\\Fonts\\arial.ttf", 18);
+        if (!TTF_Init()) {
+            fprintf(stderr, "Erro ao inicializar SDL_ttf: %s\n", SDL_GetError());
+        } else {
+            g_ui_font = open_ui_font(18);
+            if (!g_ui_font) {
+                fprintf(stderr, "Aviso: nenhuma fonte TTF encontrada. Coloque 'DejaVuSans.ttf' ao lado do executável.\n");
+            } else {
+                SDL_Log("Fonte carregada com sucesso.");
+            }
         }
 
         // Estado do botão e histograma
@@ -513,7 +575,7 @@ int main(int argc, char* argv[]) {
                     } else if (e.key.scancode == SDL_SCANCODE_S) {
                         // Salva diretamente a imagem em memória (sem passar pelo renderer)
                         SDL_Surface* atual = equalizado_on ? eq : img;
-                        if (IMG_SavePNG(atual, "output_image.png") != 0) {
+                        if (IMG_SavePNG(atual, "output_image.png")) {
                             SDL_Log("Imagem salva como 'output_image.png'");
                         } else {
                             SDL_Log("Falha ao salvar 'output_image.png': %s", SDL_GetError());
@@ -586,6 +648,7 @@ int main(int argc, char* argv[]) {
                 if (s1) {
                     SDL_Texture* t1 = SDL_CreateTextureFromSurface(ren_sec, s1);
                     if (t1) {
+                        SDL_SetTextureBlendMode(t1, SDL_BLENDMODE_BLEND);
                         SDL_FRect d1 = { area_hist.x, area_hist.y + area_hist.h + 8, (float)s1->w, (float)s1->h };
                         SDL_RenderTexture(ren_sec, t1, NULL, &d1);
                         SDL_DestroyTexture(t1);
@@ -597,6 +660,7 @@ int main(int argc, char* argv[]) {
                 if (s2) {
                     SDL_Texture* t2 = SDL_CreateTextureFromSurface(ren_sec, s2);
                     if (t2) {
+                        SDL_SetTextureBlendMode(t2, SDL_BLENDMODE_BLEND);
                         SDL_FRect d2 = { area_hist.x, area_hist.y + area_hist.h + 8 + 22, (float)s2->w, (float)s2->h };
                         SDL_RenderTexture(ren_sec, t2, NULL, &d2);
                         SDL_DestroyTexture(t2);
