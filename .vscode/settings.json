@@ -3,6 +3,9 @@
         "string.h": "c",
         "math.h": "c",
         "stdlib.h": "c",
-        "sdl_image.h": "c"
+        "sdl_image.h": "c",
+        "stdint.h": "c",
+        "sdl_ttf.h": "c",
+        "stdio.h": "c"
     }
 }
