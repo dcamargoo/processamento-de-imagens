@@ -1,19 +1,23 @@
-// Universidade Presbiteriana Mackenzie – Computação Visual – Proj1 (SDL3)
-//Claudio Dias Alves - RA: 10403569
-//Daniel Rubio Camargo - RA: 10408823
-//João Pedro Mascaro Baccelli - RA: 10224004 
-// Build (Ubuntu):
-//   gcc -std=c99 -O2 -Wall -Wextra -o main.exe main.c   $(pkg-config --cflags --libs sdl3 sdl3-image sdl3-ttf) -lm
-// Run:
+// Universidade Presbiteriana Mackenzie – Computação Visual – Projeto 1 (SDL3)
+//
+// Alunos:
+// - Nome: Claudio Dias Alves          - RA: 10403569
+// - Nome: Daniel Rubio Camargo        - RA: 10408823
+// - Nome: João Pedro Mascaro Baccelli - RA: 10224004
+//
+// Compilação:
+//   gcc -std=c99 -O2 -Wall -Wextra -o main.exe main.c $(pkg-config --cflags --libs sdl3 sdl3-image sdl3-ttf) -lm
+//
+// Execução:
 //   ./main caminho/para/imagem.png
 
 #include <stdio.h>
-#include <stdint.h>
+#include <stdint.h> // Usada para tipos inteiros de tamanho fixo
 #include <stdlib.h>
-#include <string.h>
-#include <math.h>
-#include <stdbool.h>
-#include <errno.h>
+#include <string.h> // Usada para manipulação de strings e memória
+#include <math.h> // Usada para funções matemáticas
+#include <stdbool.h> // Usada para dados booleanos
+#include <errno.h> // Usada para tratamento de erros através da variável global errno e mensagens de erro
 #include <SDL3/SDL.h>
 #include <SDL3_image/SDL_image.h>
 #include <SDL3_ttf/SDL_ttf.h>
@@ -66,7 +70,8 @@ static void calcular_histograma(SDL_Surface* img, uint32_t hist[256], uint64_t* 
         }
     }
 }
-//Calcula média e desvio padrão do histograma
+
+// Calcula média e desvio padrão do histograma
 static void estatisticas_do_histograma(const uint32_t hist[256], uint64_t total,
                                        double* media, double* desvio) {
     if (total == 0) { *media = 0.0; *desvio = 0.0; return; }
@@ -83,14 +88,14 @@ static void estatisticas_do_histograma(const uint32_t hist[256], uint64_t total,
     *desvio = sqrt(var);
 }
 
-//Descrição da media da imagem baseado no histograma
+// Descrição da media da imagem baseado no histograma
 static const char* class_luminosidade(double media) {
     if (media < 85.0) return "escura";
     if (media < 170.0) return "media";
     return "clara";
 }
 
-//Descrição do desvio da imagem baseado no histograma
+// Descrição do desvio da imagem baseado no histograma
 static const char* class_contraste(double desvio) {
     if (desvio > 60.0) return "alto";
     if (desvio > 30.0) return "medio";
@@ -216,6 +221,7 @@ static int comparar_por_intensidade(const void* a, const void* b) {
     return (int)A->intensidade - (int)B->intensidade;
 }
 
+// Mapeia a intensidades de pixels baseado na distribuição cumulativa da imagem RGBA32
 size_t criar_matriz_mapeamento_por_imagem(SDL_Surface* imagem, ParIntensidade** saidaPares) {
     if (!imagem || !saidaPares) return 0;
     if (imagem->format != SDL_PIXELFORMAT_RGBA32) { *saidaPares = NULL; return 0; }
@@ -287,6 +293,7 @@ size_t criar_matriz_mapeamento_por_imagem(SDL_Surface* imagem, ParIntensidade** 
     *saidaPares = pares;
     return quantidadeIntensidades;
 }
+
 // Equaliza tons de cinza por mapeamento usando os Structs
 int equalizar_com_matriz_linear(SDL_Surface* src, SDL_Surface* dst,
                                 const ParIntensidade* pares, size_t n) {
