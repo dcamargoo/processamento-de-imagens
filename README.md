@@ -96,6 +96,15 @@ processamento-de-imagens/
 
 ---
 
+## Testes de Saída
+### Teste 1
+![Image](https://github.com/user-attachments/assets/c529950b-62b8-4ad4-9bd6-6e480881c5e5)
+![Image](https://github.com/user-attachments/assets/96fa3ca0-2e26-4cd7-b95d-57a47b48ef87)
+
+### Teste 2
+
+---
+
 ## 📑 Referências
 Documentação oficial da SDL3  
 Slides da disciplina Computação Visual – Prof. André Kishimoto  
