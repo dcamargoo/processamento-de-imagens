@@ -96,12 +96,14 @@ processamento-de-imagens/
 
 ---
 
-## Testes de Saída
+## 🧪 Testes de Saída
 ### Teste 1
 ![Image](https://github.com/user-attachments/assets/c529950b-62b8-4ad4-9bd6-6e480881c5e5)
 ![Image](https://github.com/user-attachments/assets/96fa3ca0-2e26-4cd7-b95d-57a47b48ef87)
 
 ### Teste 2
+![Image](https://github.com/user-attachments/assets/b543ccb1-8381-44f3-98f1-011f3ffcc127)
+![Image](https://github.com/user-attachments/assets/3baa401f-270c-4ec0-8370-ac0107c44438)
 
 ---
 
